@@ -2,17 +2,21 @@ FROM archlinux:base AS build
 RUN pacman -Syu --noconfirm --needed base-devel rust git gtk3 gdk-pixbuf2 \
     mpv ffmpeg libwebp libarchive poppler-glib libspectre imagemagick librsvg \
     glycin libheif namcap && useradd -m builder && mkdir /build /out && chown builder /build /out
-COPY --chown=builder:builder Cargo.toml Cargo.lock LICENSE PKGBUILD /work/
+COPY --chown=builder:builder Cargo.toml Cargo.lock LICENSE PKGBUILD .SRCINFO /work/
 COPY --chown=builder:builder src /work/src
 COPY --chown=builder:builder renderer /work/renderer
 COPY --chown=builder:builder defaults /work/defaults
 COPY --chown=builder:builder tools /work/tools
-COPY --chown=builder:builder ci/check-package.py /work/ci/check-package.py
+COPY --chown=builder:builder ci/check-package.py ci/check-package-source.py /work/ci/
 USER builder
 WORKDIR /work
 ENV CARGO_HOME=/build/cargo-home
-RUN cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings
-RUN BUILDDIR=/build bash tools/package.sh /build/package && \
+RUN cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && \
+    makepkg --printsrcinfo | cmp - .SRCINFO
+RUN install -d /build/package && install -m644 PKGBUILD /build/package/ && \
+    BUILDDIR=/build makepkg --dir /build/package --cleanbuild --noconfirm && \
+    makepkg --dir /build/package --allsource --noconfirm && \
+    python ci/check-package-source.py /work /build/media-browser/src/application && \
     python ci/check-package.py /build/package/*.pkg.tar.zst && cp /build/package/*.pkg.tar.zst /out/ && \
     cp /build/package/*.src.tar.gz /out/ && \
     bash tools/vendor-release.sh /build/media-browser/src/application/Cargo.toml /out
@@ -31,6 +35,16 @@ RUN bsdtar -xf /sources/*.src.tar.gz -C /rebuild && \
 USER sourcebuilder
 WORKDIR /rebuild/media-browser
 RUN BUILDDIR=/rebuild/build makepkg --cleanbuild --noconfirm
+
+# Fetch and build using only PKGBUILD and its declared dependencies/downloads.
+FROM archlinux:base AS recipe-only
+RUN pacman -Syu --noconfirm --needed base-devel && useradd -m recipebuilder && \
+    mkdir /recipe && chown recipebuilder /recipe
+COPY --chown=recipebuilder:recipebuilder PKGBUILD /recipe/PKGBUILD
+RUN bash -c 'source /recipe/PKGBUILD; pacman -S --noconfirm --needed "${depends[@]}" "${makedepends[@]}" "${checkdepends[@]}"'
+USER recipebuilder
+WORKDIR /recipe
+RUN makepkg --cleanbuild --noconfirm
 
 # No checkout, test harness, development libraries or user configuration.
 FROM archlinux:base AS package-runtime

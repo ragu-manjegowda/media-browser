@@ -111,20 +111,42 @@ circle at bottom-right; videos use a play triangle.
 ## Build and package (Arch Linux)
 
 Install `base-devel` and build as an ordinary user. All other build and runtime
-dependencies are declared in `PKGBUILD` and can be installed by makepkg:
+dependencies are declared in `PKGBUILD` and can be installed by makepkg. A recipe
+obtained by an AUR helper or copied into an empty directory is self-contained:
+
+```sh
+makepkg -si --cleanbuild
+```
+
+The recipe downloads a checksummed application archive pinned to a published
+commit and the exact private pqiv revision. No local source-file staging is
+required. A `paru` PKGBUILD repository can use this recipe directly; this does
+not imply that the package has been published to the AUR.
+
+From this checkout, an optional helper keeps package outputs in a separate
+directory and also generates the full source package:
 
 ```sh
 bash tools/package.sh --syncdeps
 ```
 
-The script stages makepkg's flat source inputs under `.build/package`, keeping
-its `src/` separate from the Rust source directory. It runs the locked release
-build, unit tests, native renderer build, package construction and corresponding
-source-package generation. Install the resulting package with pacman, e.g.:
+The script copies only `PKGBUILD` under `.build/package`. It runs the locked
+release build, unit tests, native renderer build, package construction and
+corresponding source-package generation. Install the resulting package with
+pacman, e.g.:
 
 ```sh
 sudo pacman -U "$(makepkg --dir .build/package --packagelist)"
 ```
+
+Direct builds from the checkout also protect the controller's `src/` directory:
+when makepkg would use it for build output, the recipe redirects that output to
+`.build/`. Existing external `BUILDDIR` settings are respected. Package builds
+always use the pinned published application sources.
+CI checks that every packaged application input matches the current checkout;
+application changes require publishing a new source revision and updating the
+archive pin/checksum. Regenerate `.SRCINFO` with `makepkg --printsrcinfo` after
+changing the recipe.
 
 The generated full source package is independently buildable with ordinary
 `makepkg -s` after extraction. Package builds use their own Cargo cache and

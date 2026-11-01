@@ -27,16 +27,22 @@ GTK/GIO/GdkPixbuf development libraries and FFmpeg declared in the Arch build.
 ```sh
 docker build --target build -t media-browser-build -f ci/Dockerfile .
 docker build --target source-rebuild -f ci/Dockerfile .
+docker build --target recipe-only -f ci/Dockerfile .
 docker build --target package-runtime -f ci/Dockerfile .
 ```
 
 `build` runs format/strict Clippy checks, locked unit tests, the pinned native
-renderer build, PKGBUILD and namcap validation. It produces binary/full-source
+renderer build, generated `.SRCINFO` parity, direct PKGBUILD and namcap validation.
+It checks that pinned application inputs match the checkout, preventing tests
+of an older package from passing for changed application code. It produces binary/full-source
 packages, a Rust dependency-source/license archive and checksums under `/out`.
 `source-rebuild` extracts the full source package into an unrelated clean Arch
 environment and builds it as an ordinary user using declared dependencies.
 `package-runtime` installs into fresh Arch base with only declared runtime
 dependencies, then verifies package ownership, resources and binary versions.
+`recipe-only` copies only `PKGBUILD` into a fresh Arch image, installs declared
+dependencies and runs ordinary `makepkg --cleanbuild`; every source must be
+retrievable without the checkout, a staging helper or cached source files.
 
 ## Full GUI matrix
 

@@ -25,6 +25,8 @@ jobs:
         run: docker build --target build -t media-browser-build -f ci/Dockerfile .
       - name: Rebuild standalone source package in a fresh Arch system
         run: docker build --target source-rebuild -f ci/Dockerfile .
+      - name: Build from PKGBUILD alone with declared source downloads
+        run: docker build --target recipe-only -f ci/Dockerfile .
       - name: Install and verify using only declared runtime dependencies
         run: docker build --target package-runtime -f ci/Dockerfile .
       - name: Export package and corresponding source

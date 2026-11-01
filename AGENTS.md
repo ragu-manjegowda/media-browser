@@ -79,8 +79,11 @@ The exact pqiv pin, backends and GPL-3.0-or-later provenance are documented in
 [`renderer/README.md`](renderer/README.md). Apply the patch to that pin using
 `git apply --unidiff-zero`. Edit upstream call sites in a separate pinned source
 checkout and regenerate the patch; keep integration code in `media-browser.c`.
-Update `PKGBUILD` source hashes whenever a packaged source changes. New Rust
-modules must be added to `_modules`. Keep native version strings synchronized
+`PKGBUILD` downloads a checksummed application archive pinned to a published
+commit. After application changes, publish the source revision and update the
+archive pin/checksum; `ci/check-package-source.py` rejects application inputs
+that differ from the checkout. Regenerate `.SRCINFO` after recipe changes.
+Keep native version strings synchronized
 between `PKGBUILD` and `src/config.rs` when changing the renderer contract.
 
 Private pqiv pins the application/API, not GTK or codec library ABIs. Build
@@ -100,6 +103,9 @@ bash -n PKGBUILD tools/package.sh tools/vendor-release.sh ci/debug-renderer.sh
 
 Use `bash tools/package.sh --syncdeps` for a local package build. Cargo-only
 builds do not install the renderer/defaults needed for application execution.
+The recipe also builds directly with `makepkg -si --cleanbuild`, including when
+only `PKGBUILD` is available. CI's `recipe-only` target verifies that path in a
+clean Arch environment without this checkout or the packaging helper.
 [`tests/README.md`](tests/README.md) documents the full installed-package GUI
 matrix, scenario coverage, portable fixtures and artifact collection.
 
