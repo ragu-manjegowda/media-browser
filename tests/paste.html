@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Media Browser Paste Test</title>
+<style>body {font: 18px sans-serif} textarea {width:95%; height:70vh}</style>
+<h1>Paste an image</h1>
+<textarea autofocus aria-label="Paste image here"></textarea>
+<script>
+addEventListener('paste', async event => {
+  event.preventDefault();
+  try {
+    const file = [...event.clipboardData.files].find(file => file.type.startsWith('image/'));
+    if (!file) throw new Error('Paste did not contain an image file');
+    const image = await createImageBitmap(file);
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    await new Promise((resolve, reject) => {reader.onload = resolve; reader.onerror = reject});
+    await fetch('/result', {method:'POST', body:JSON.stringify({type:file.type,
+      width:image.width, height:image.height, data:reader.result})});
+    document.querySelector('h1').textContent = 'Image pasted';
+  } catch(error) {
+    await fetch('/result', {method:'POST', body:JSON.stringify({error:String(error)})});
+  }
+});
+fetch('/ready', {method:'POST', body:JSON.stringify({ready:true})});
+</script>

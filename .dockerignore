@@ -1,0 +1,8 @@
+.git
+target
+.build
+artifacts/*
+!artifacts/packages/
+!artifacts/packages/**
+__pycache__
+*.pkg.tar.*

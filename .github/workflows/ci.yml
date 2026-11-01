@@ -1,0 +1,89 @@
+name: acceptance
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  harness-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install ruff==0.17.3
+      - run: ruff check tests ci tools && ruff format --check tests ci tools
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clean Arch format, lint, unit and package build
+        run: docker build --target build -t media-browser-build -f ci/Dockerfile .
+      - name: Rebuild standalone source package in a fresh Arch system
+        run: docker build --target source-rebuild -f ci/Dockerfile .
+      - name: Install and verify using only declared runtime dependencies
+        run: docker build --target package-runtime -f ci/Dockerfile .
+      - name: Export package and corresponding source
+        run: |
+          mkdir -p artifacts/packages
+          id=$(docker create media-browser-build)
+          trap 'docker rm "$id"' EXIT
+          docker cp "$id:/out/." artifacts/packages/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: packages
+          path: artifacts
+          if-no-files-found: error
+  gui:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        geometry: [1024x768, 2880x1800]
+        compositor: [none, picom]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: artifacts
+      - name: Build fresh installed runtime
+        run: docker build -t media-browser-gui -f ci/runtime.Dockerfile .
+      - name: Full actual application/viewer acceptance
+        run: |
+          mkdir -p artifacts
+          chmod 777 artifacts
+          docker run --rm --init --network none --shm-size=512m \
+            -e MEDIA_BROWSER_REVISION='${{ github.sha }}' \
+            -e MEDIA_BROWSER_REQUIRE_FULL=1 \
+            -v "$PWD/artifacts:/artifacts" media-browser-gui \
+            --artifacts /artifacts/run --geometry '${{ matrix.geometry }}' \
+            --compositor '${{ matrix.compositor }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-${{ matrix.geometry }}-${{ matrix.compositor }}
+          path: artifacts
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [package, gui, harness-lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: artifacts
+      - name: Publish package and full corresponding source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create '${{ github.ref_name }}' --repo '${{ github.repository }}' --generate-notes artifacts/packages/*
