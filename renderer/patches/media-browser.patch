@@ -1,0 +1,690 @@
+diff --git a/pqiv.c b/pqiv.c
+index 27e667b..95c8fae 100644
+--- a/pqiv.c
++++ b/pqiv.c
+@@ -735,6 +735,18 @@ const struct pqiv_action_descriptor {
+ 	{ "toggle_negate_mode", PARAMETER_INT },
+ 	{ "toggle_mark", PARAMETER_NONE },
+ 	{ "clear_marks", PARAMETER_NONE },
++	{ "reload_thumbnail", PARAMETER_INT },
++	{ "mb_event", PARAMETER_CHARPTR },
++	{ "mb_mark", PARAMETER_CHARPTR },
++	{ "mb_confirm", PARAMETER_CHARPTR },
++	{ "mb_error", PARAMETER_CHARPTR },
++	{ "mb_row", PARAMETER_INT },
++	{ "mb_help", PARAMETER_NONE },
++	{ "mb_copy_request", PARAMETER_INT },
++	{ "mb_copy", PARAMETER_CHARPTR },
++	{ "mb_view", PARAMETER_CHARPTR },
++	{ "mb_search_focus", PARAMETER_NONE },
++	{ "mb_search_status", PARAMETER_CHARPTR },
+ 	{ NULL, 0 }
+ };
+ /* }}} */
+@@ -775,6 +787,23 @@ void queue_thumbnail_load(BOSNode *);
+ #endif
+ void unload_image(BOSNode *);
+ void remove_image(BOSNode *);
++static void mb_emit(const gchar *event);
++static gboolean mb_state_idle(gpointer unused);
++static void mb_canvas_background(cairo_t *cr, gboolean transparent);
++static void mb_theme_changed(GtkWidget *widget, gpointer unused);
++static void mb_window_background(GdkWindow *window);
++static GtkWidget *mb_gallery_canvas = NULL, *mb_gallery_entry = NULL, *mb_gallery_status = NULL;
++static guint mb_view_count(void);
++static BOSNode *mb_view_select(guint index);
++static guint mb_view_rank(BOSNode *node);
++static BOSNode *mb_view_next(BOSNode *node);
++static BOSNode *mb_view_previous(BOSNode *node);
++static void mb_view_prune(void);
++static void mb_view_clear(void);
++gboolean window_button_press_callback(GtkWidget *, GdkEventButton *, gpointer);
++gboolean window_button_release_callback(GtkWidget *, GdkEventButton *, gpointer);
++gboolean window_motion_notify_callback(GtkWidget *, GdkEventMotion *, gpointer);
++gboolean window_scroll_callback(GtkWidget *, GdkEventScroll *, gpointer);
+ gboolean initialize_gui_callback(gpointer);
+ gboolean initialize_image_loader();
+ void window_hide_cursor();
+@@ -1989,6 +2018,10 @@ void load_images() {/*{{{*/
+ #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
+ gboolean test_and_invalidate_thumbnail(file_t *file) {/*{{{*/
+ 	// Must be called with an active lock!
++	if(file->thumbnail && g_getenv("MEDIA_BROWSER_EVENTS") && file->mb_thumbnail_generation != file->mb_generation) {
++		cairo_surface_destroy(file->thumbnail);
++		file->thumbnail = NULL;
++	}
+ 	if(file->thumbnail) {
+ 		const int thumb_width = cairo_image_surface_get_width(file->thumbnail);
+ 		const int thumb_height = cairo_image_surface_get_height(file->thumbnail);
+@@ -2475,6 +2508,28 @@ file_t *image_loader_duplicate_file(file_t *file, gchar *custom_file_name, gchar
+ 
+ 	return new_file;
+ }/*}}}*/
++static gboolean clear_empty_window(gpointer unused) {
++	D_LOCK(file_tree);
++	if(bostree_node_count(file_tree) != 0) {
++		D_UNLOCK(file_tree);
++		return FALSE;
++	}
++	current_file_node = NULL;
++	earlier_file_node = NULL;
++	D_UNLOCK(file_tree);
++	/* Cairo surfaces and GTK state belong to the main thread. */
++	invalidate_current_scaled_image_surface();
++	if(last_visible_surface) {
++		cairo_surface_destroy(last_visible_surface);
++		last_visible_surface = NULL;
++	}
++	current_image_drawn = FALSE;
++	update_info_text(NULL);
++	queue_draw();
++	mb_emit("state");
++	return FALSE;
++}
++
+ gboolean image_loader_load_single(BOSNode *node, gboolean called_from_main) {/*{{{*/
+ 	// Sanity check
+ 	assert(bostree_node_weak_unref(file_tree, bostree_node_weak_ref(node)) != NULL);
+@@ -2484,6 +2539,9 @@ gboolean image_loader_load_single(BOSNode *node, gboolean called_from_main) {/*{
+ 	if(file->is_loaded) {
+ 		return TRUE;
+ 	}
++	D_LOCK(file_tree);
++	guint64 requested_generation = file->mb_generation;
++	D_UNLOCK(file_tree);
+ 
+ 	GError *error_pointer = NULL;
+ 
+@@ -2501,12 +2559,18 @@ gboolean image_loader_load_single(BOSNode *node, gboolean called_from_main) {/*{
+ 	}
+ 
+ 	if(file->is_loaded) {
++		D_LOCK(file_tree);
++		if(g_getenv("MEDIA_BROWSER_EVENTS")) {
++			file->mb_loaded_generation = requested_generation;
++			file->force_reload = requested_generation != file->mb_generation;
++		}
++		D_UNLOCK(file_tree);
+ 		if(error_pointer) {
+ 			g_printerr("A recoverable error occurred: %s\n", error_pointer->message);
+ 			g_clear_error(&error_pointer);
+ 		}
+ 
+-		if((file->file_flags & FILE_FLAGS_MEMORY_IMAGE) == 0) {
++		if(option_watch_files != OFF && (file->file_flags & FILE_FLAGS_MEMORY_IMAGE) == 0) {
+ 			GFile *the_file = g_file_new_for_path(file->file_name);
+ 			if(the_file != NULL) {
+ 				g_mutex_lock(&file->lock);
+@@ -2572,16 +2636,7 @@ gboolean image_loader_load_single(BOSNode *node, gboolean called_from_main) {/*{
+ 		if(!called_from_main && bostree_node_count(file_tree) == 0) {
+ 			if(option_allow_empty_window) {
+ 				D_UNLOCK(file_tree);
+-				current_file_node = NULL;
+-				earlier_file_node = NULL;
+-				invalidate_current_scaled_image_surface();
+-				if(last_visible_surface) {
+-					cairo_surface_destroy(last_visible_surface);
+-					last_visible_surface = NULL;
+-				}
+-				current_image_drawn = FALSE;
+-				update_info_text(NULL);
+-				queue_draw();
++				gdk_threads_add_idle(clear_empty_window, NULL);
+ 				return FALSE;
+ 			}
+ 			else {
+@@ -2599,6 +2654,9 @@ gboolean image_loader_load_single(BOSNode *node, gboolean called_from_main) {/*{
+ }/*}}}*/
+ #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
+ void image_loader_create_thumbnail(file_t *file) {/*{{{*/
++	D_LOCK(file_tree);
++	guint64 decoded_generation = file->mb_loaded_generation;
++	D_UNLOCK(file_tree);
+ 	const double scale_level_w = option_thumbnails.width * 1.0 / file->width;
+ 	const double scale_level_h = option_thumbnails.height * 1.0 / file->height;
+ 	double scale_level = scale_level_w > scale_level_h ? scale_level_h : scale_level_w;
+@@ -2650,7 +2708,18 @@ void image_loader_create_thumbnail(file_t *file) {/*{{{*/
+ 	}
+ 
+ 	cairo_destroy(cr);
+-	file->thumbnail = surf;
++	D_LOCK(file_tree);
++	if(g_getenv("MEDIA_BROWSER_EVENTS") && decoded_generation != file->mb_generation) {
++		/* A publication arrived while old image data was being decoded/drawn.
++		 * Never let that completion reinstall a placeholder over a new tile. */
++		cairo_surface_destroy(surf);
++	}
++	else {
++		if(file->thumbnail) cairo_surface_destroy(file->thumbnail);
++		file->thumbnail = surf;
++		file->mb_thumbnail_generation = decoded_generation;
++	}
++	D_UNLOCK(file_tree);
+ }/*}}}*/
+ #endif
+ void image_generate_prerendered_view(file_t *file, gboolean force, double scale_level) {/*{{{*/
+@@ -2941,6 +3010,33 @@ void remove_image(BOSNode *node) {/*{{{*/
+ 		return;
+ 	}
+ 
++	if(g_getenv("MEDIA_BROWSER_EVENTS") && application_mode == MONTAGE) {
++		/* Explicit catalog removal is a GTK-main-thread operation. Do not
++		 * fake a failed decode on a worker just to remove the current entry. */
++		abort_pending_image_loads(NULL);
++		BOSNode *next = mb_view_next(node);
++		if(!next) next = mb_view_previous(node);
++		guint references = 0;
++		if(current_file_node == node) {
++			current_file_node = next ? bostree_node_weak_ref(next) : NULL;
++			references++;
++		}
++		if(earlier_file_node == node) { earlier_file_node = NULL; references++; }
++		if(montage_window_control.selected_node == node) {
++			montage_window_control.selected_node = next ? bostree_node_weak_ref(next) : NULL;
++			references++;
++		}
++		bostree_remove(file_tree, node);
++		while(references--) bostree_node_weak_unref(file_tree, node);
++		mb_view_prune();
++		gboolean empty = bostree_node_count(file_tree) == 0;
++		if(!empty) montage_window_move_cursor(0, 0, 0);
++		D_UNLOCK(file_tree);
++		if(empty) clear_empty_window(NULL);
++		else queue_draw();
++		return;
++	}
++
+ 	if(node == current_file_node) {
+ 		// Cheat the image loader into thinking that the file is no longer
+ 		// available, and force a reload. This is an easy way to use the
+@@ -4413,10 +4509,18 @@ void calculate_base_draw_pos_and_size(int *image_transform_width, int *image_tra
+ 	}
+ }/*}}}*/
+ #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
++/* Only montage coordinates use the filtered view. Loading, lifetime, stable-ID
++ * lookup and registry mutation continue to use the real file tree. */
++#define bostree_node_count(tree) mb_view_count()
++#define bostree_select(tree, index) mb_view_select(index)
++#define bostree_rank(node) mb_view_rank(node)
++#define bostree_next_node(node) mb_view_next(node)
++#define bostree_previous_node(node) mb_view_previous(node)
+ void montage_window_set_cursor(int pos_x, int pos_y) {/*{{{*/
+ 	const unsigned n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
+ 	const unsigned n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+ 	const size_t number_of_images = (ptrdiff_t)bostree_node_count(file_tree);
++	if(number_of_images == 0 || n_thumbs_x == 0 || n_thumbs_y == 0) return;
+ 
+ 	if(!montage_window_control.selected_node) {
+ 		return;
+@@ -4577,6 +4681,7 @@ gboolean montage_window_get_move_cursor_target(int pos_x, int pos_y, int move_y_
+ }/*}}}*/
+ void montage_window_move_cursor(int move_x, int move_y, int move_y_pages) {/*{{{*/
+ 	// Must be called with an active lock.
++	if(bostree_node_count(file_tree) == 0) return;
+ 	const int n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
+ 	const int n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+ 
+@@ -4800,7 +4905,7 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
+ 
+ 	// Draw black background
+ 	cairo_save(cr_arg);
+-	cairo_set_source_rgba(cr_arg, 0., 0., 0., option_transparent_background ? 0. : 1.);
++	mb_canvas_background(cr_arg, option_transparent_background);
+ 	cairo_set_operator(cr_arg, CAIRO_OPERATOR_SOURCE);
+ 	cairo_paint(cr_arg);
+ 	cairo_restore(cr_arg);
+@@ -4808,9 +4913,13 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
+ 	// Calculate how many thumbnails to draw
+ 	const unsigned n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
+ 	const unsigned n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
++	if(bostree_node_count(file_tree) == 0 || n_thumbs_x == 0 || n_thumbs_y == 0) {
++		D_UNLOCK(file_tree);
++		return FALSE;
++	}
+ 	size_t top_left_id = montage_window_control.scroll_y * n_thumbs_x;
+ 
+-	BOSNode *selected_node = bostree_node_weak_unref(file_tree, bostree_node_weak_ref(montage_window_control.selected_node));
++	BOSNode *selected_node = montage_window_control.selected_node ? bostree_node_weak_unref(file_tree, bostree_node_weak_ref(montage_window_control.selected_node)) : NULL;
+ 	size_t selection_rank;
+ 	if(!selected_node) {
+ 		selected_node = NULL;
+@@ -4848,7 +4957,7 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
+ 		cairo_stroke(cr_arg);
+ 		cairo_restore(cr_arg);*/
+ 
+-		if(thumb_file->thumbnail) {
++		if(thumb_file->thumbnail && (!g_getenv("MEDIA_BROWSER_EVENTS") || thumb_file->mb_published)) {
+ 			cairo_save(cr_arg);
+ 			cairo_translate(cr_arg,
+ 				(main_window_width - n_thumbs_x * (option_thumbnails.width + 10)) / 2   + (draw_now % n_thumbs_x) * (option_thumbnails.width + 10)  + (option_thumbnails.width + 10 - cairo_image_surface_get_width(thumb_file->thumbnail))/2,
+@@ -4877,8 +4986,8 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
+ 				cairo_set_source_rgb(cr_arg, 0, 0, 0);
+ 				cairo_set_line_width(cr_arg, 1);
+ 				cairo_stroke_preserve(cr_arg);
+-				cairo_set_source_rgb(cr_arg, 1, 0, 1);
+-				cairo_set_operator(cr_arg, CAIRO_OPERATOR_DIFFERENCE);
++				cairo_set_source_rgb(cr_arg, option_box_colors.fg_red, option_box_colors.fg_green, option_box_colors.fg_blue);
++				cairo_set_operator(cr_arg, CAIRO_OPERATOR_OVER);
+ 				cairo_fill(cr_arg);
+ 				cairo_restore(cr_arg);
+ 			}
+@@ -4921,6 +5030,11 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
+ 	D_UNLOCK(file_tree);
+ 	return FALSE;
+ }/*}}}*/
++#undef bostree_node_count
++#undef bostree_select
++#undef bostree_rank
++#undef bostree_next_node
++#undef bostree_previous_node
+ #endif
+ void window_clear_background_pixmap() {/*{{{*/
+ 	if(wm_supports_moveresize) {
+@@ -4935,16 +5049,7 @@ void window_clear_background_pixmap() {/*{{{*/
+ 			}
+ 		#endif
+ 
+-		Display *display = GDK_SCREEN_XDISPLAY(screen);
+-		GdkWindow *window = gtk_widget_get_window(GTK_WIDGET(main_window));
+-
+-		#if GTK_MAJOR_VERSION >= 3
+-			unsigned long window_xid = gdk_x11_window_get_xid(window);
+-		#else
+-			unsigned long window_xid = GDK_WINDOW_XID(window);
+-		#endif
+-
+-		XSetWindowBackground(display, window_xid, 0);
++		mb_window_background(gtk_widget_get_window(GTK_WIDGET(main_window)));
+ 	#endif
+ }/*}}}*/
+ void window_prerender_background_pixmap(int window_width, int window_height, double scale_level, gboolean fullscreen) {/*{{{*/
+@@ -5074,12 +5179,13 @@ gboolean window_show_background_pixmap_cb(gpointer user_data) {/*{{{*/
+ 	return FALSE;
+ }/*}}}*/
+ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_data) {/*{{{*/
++	if(g_getenv("MEDIA_BROWSER_EVENTS") || g_getenv("MEDIA_BROWSER_PHOTO_STATE")) g_idle_add(mb_state_idle, NULL);
+ 	// Drawing can generally mean that we succeeded in performing some action.
+ 	// Resume the action queue
+ 	action_done();
+ 
+ 	// Clip shadow area out
+-	if(!main_window_in_fullscreen) {
++	if(!main_window_in_fullscreen && !mb_gallery_canvas) {
+ 		cairo_new_path(cr_arg);
+ 		cairo_rectangle(cr_arg, csd_left, csd_top, main_window_width, main_window_height);
+ 		cairo_close_path(cr_arg);
+@@ -5138,7 +5244,7 @@ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_
+ 
+ 		// Draw black background
+ 		cairo_save(cr);
+-		cairo_set_source_rgba(cr, 0., 0., 0., option_transparent_background ? 0. : 1.);
++		mb_canvas_background(cr, option_transparent_background);
+ 		cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+ 		cairo_paint(cr);
+ 		cairo_restore(cr);
+@@ -5306,7 +5412,7 @@ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_
+ 			// Draw black background
+ 			// This must be done explicitly in GTK2, otherwise the background will be white.
+ 			cairo_save(cr_arg);
+-			cairo_set_source_rgba(cr_arg, 0., 0., 0., option_transparent_background ? 0. : 1.);
++			mb_canvas_background(cr_arg, option_transparent_background);
+ 			cairo_set_operator(cr_arg, CAIRO_OPERATOR_SOURCE);
+ 			cairo_paint(cr_arg);
+ 			cairo_restore(cr_arg);
+@@ -5626,8 +5732,54 @@ void UNUSED_FUNCTION action_done() {/*{{{*/
+ 	}
+ #endif
+ }/*}}}*/
++#include "media-browser.c"
+ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 	switch(action_id) {
++		case ACTION_MB_VIEW:
++			mb_set_view(parameter.pcharptr);
++			break;
++		case ACTION_MB_SEARCH_FOCUS:
++			if(mb_gallery_entry) { gtk_widget_grab_focus(mb_gallery_entry); gtk_editable_select_region(GTK_EDITABLE(mb_gallery_entry), 0, -1); }
++			break;
++		case ACTION_MB_SEARCH_STATUS:
++			mb_search_status(parameter.pcharptr);
++			break;
++		case ACTION_MB_HELP:
++			mb_help();
++			break;
++		case ACTION_MB_COPY_REQUEST:
++			mb_copy_request(parameter.pint != 0);
++			break;
++		case ACTION_MB_COPY:
++			mb_copy(parameter.pcharptr);
++			break;
++		case ACTION_MB_EVENT:
++			mb_emit(parameter.pcharptr);
++			break;
++		case ACTION_MB_MARK:
++			mb_mark(parameter.pcharptr);
++			break;
++		case ACTION_MB_CONFIRM:
++			mb_dialog(parameter.pcharptr, FALSE);
++			break;
++		case ACTION_MB_ERROR:
++			mb_dialog(parameter.pcharptr, TRUE);
++			break;
++		case ACTION_MB_ROW:
++			if(application_mode == MONTAGE) {
++				D_LOCK(file_tree);
++				BOSNode *node = montage_window_control.selected_node;
++				if(node) {
++					gint columns = MAX(1, main_window_width / (option_thumbnails.width + 10));
++					gint rank = mb_view_rank(node);
++					gint target = rank - rank % columns;
++					if(parameter.pint) target = MIN(target + columns - 1, (gint)mb_view_count() - 1);
++					montage_window_move_cursor(target - rank, 0, 0);
++				}
++				D_UNLOCK(file_tree);
++				queue_draw();
++			}
++			break;
+ 		case ACTION_NOP:
+ 			break;
+ 
+@@ -5672,7 +5824,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 				current_scale_level *= parameter.pdouble;
+ 			}
+ 			current_scale_level = round(current_scale_level * 100.) / 100.;
+-			if((option_scale == AUTO_SCALEDOWN && current_scale_level > 1) || option_scale == NO_SCALING) {
++			if(g_getenv("MEDIA_BROWSER_PHOTO_VIEWER") || (option_scale == AUTO_SCALEDOWN && current_scale_level > 1) || option_scale == NO_SCALING) {
+ 				scale_override = TRUE;
+ 			}
+ 			invalidate_current_scaled_image_surface();
+@@ -5950,9 +6102,9 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 			{
+ 				D_LOCK(file_tree);
+ 				if(parameter.pint < 0) {
+-					parameter.pint += bostree_node_count(file_tree);
++					parameter.pint += action_id == ACTION_GOTO_FILE_BYINDEX && application_mode == MONTAGE ? mb_view_count() : bostree_node_count(file_tree);
+ 				}
+-				BOSNode *node = bostree_select(file_tree, parameter.pint);
++				BOSNode *node = action_id == ACTION_GOTO_FILE_BYINDEX && application_mode == MONTAGE ? mb_view_select(parameter.pint) : bostree_select(file_tree, parameter.pint);
+ 				if(node) {
+ 					node = bostree_node_weak_ref(node);
+ 				}
+@@ -5986,6 +6138,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 				}
+ 			}
+ 
++			mb_emit("state");
+ 			return;
+ 			break;
+ 
+@@ -6027,6 +6180,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 				}
+ 			}
+ 
++			mb_emit("state");
+ 			return;
+ 			break;
+ 
+@@ -6254,6 +6408,38 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ #endif
+ 
+ #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
++		case ACTION_RELOAD_THUMBNAIL:
++			{
++				D_LOCK(file_tree);
++				BOSNode *node = NULL;
++				for(BOSNode *candidate = bostree_select(file_tree, 0); candidate; candidate = bostree_next_node(candidate)) {
++					const gchar *name = FILE(candidate)->file_name;
++					const gchar *base = strrchr(name, G_DIR_SEPARATOR);
++					base = base ? base + 1 : name;
++					gchar *end = NULL;
++					gint64 id = g_ascii_strtoll(base, &end, 10);
++					if(end != base && strcmp(end, ".png") == 0 && id == parameter.pint) {
++						node = candidate;
++						break;
++					}
++				}
++				if(node) {
++					file_t *file = FILE(node);
++					file->mb_published = TRUE;
++					file->mb_generation++;
++					if(file->thumbnail) {
++						cairo_surface_destroy(file->thumbnail);
++						file->thumbnail = NULL;
++					}
++					/* Also retain invalidation when a previous load is in flight. */
++					file->force_reload = TRUE;
++					queue_thumbnail_load(bostree_node_weak_ref(node));
++				}
++				D_UNLOCK(file_tree);
++				/* The loader redraws when the replacement is ready. */
++			}
++			break;
++
+ 		case ACTION_SET_THUMBNAIL_SIZE:
+ 			option_thumbnails.width = parameter.p2short.p1;
+ 			option_thumbnails.height = parameter.p2short.p2;
+@@ -6321,6 +6507,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 			set_cursor_auto_hide_mode(TRUE);
+ 
+ 			gtk_widget_queue_draw(GTK_WIDGET(main_window));
++			mb_emit("state");
+ 			return;
+ 			break;
+ 
+@@ -6405,9 +6592,13 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 			{
+ 				const int n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
+ 				const int n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+-				const ptrdiff_t number_of_images = (ptrdiff_t)bostree_node_count(file_tree);
++				const ptrdiff_t number_of_images = (ptrdiff_t)mb_view_count();
+ 				const ptrdiff_t visible_thumbnails = ((montage_window_control.scroll_y + n_thumbs_y) * n_thumbs_x > number_of_images ? number_of_images - montage_window_control.scroll_y * n_thumbs_x : n_thumbs_x * n_thumbs_y);
+ 				const int number_of_characters = strlen(parameter.pcharptr);
++				if(visible_thumbnails <= 1) {
++					montage_window_control.show_binding_overlays = 0;
++					break;
++				}
+ 
+ 				/*
+ 					On the algorithm used for generating follow mode key bindings:
+@@ -6557,6 +6748,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 				follow_mode_key_binding.next_key_bindings = NULL;
+ 			}
+ 			active_key_binding.key_binding = NULL;
++			mb_emit("state");
+ 			return;
+ 			break;
+ #endif // without actions
+@@ -6693,6 +6885,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
+ 	}
+ 
+ 	// The current action is done, and the function wasn't explicitly returned
++	mb_emit("state");
+ 	// from. Issue the next action, if one's in the queue, to be run.
+ 	action_done();
+ }/*}}}*/
+@@ -6754,6 +6947,10 @@ gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event,
+ 		}
+ 
+ 		// If the fullscreen state just changed execute the post-change callbacks here
++		if(mb_gallery_canvas) {
++			main_window_width = MAX(1, gtk_widget_get_allocated_width(mb_gallery_canvas) * screen_scale_factor);
++			main_window_height = MAX(1, gtk_widget_get_allocated_height(mb_gallery_canvas) * screen_scale_factor);
++		}
+ 		if(fullscreen_transition_source_id >= 0) {
+ 			g_source_remove(fullscreen_transition_source_id);
+ 			if(main_window_in_fullscreen) {
+@@ -6765,7 +6962,7 @@ gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event,
+ 		}
+ 
+ 		// Rescale the image
+-		if(main_window_width != event->width - csd_width || main_window_height != event->height - csd_height) {
++		if(g_getenv("MEDIA_BROWSER_PHOTO_VIEWER") || wm_ignores_size_requests || main_window_width != event->width - csd_width || main_window_height != event->height - csd_height) {
+ 			set_scale_level_to_fit();
+ 		}
+ 		gdk_window_invalidate_rect(gtk_widget_get_window(GTK_WIDGET(main_window)), NULL, TRUE);
+@@ -6784,6 +6981,7 @@ gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event,
+ 		D_LOCK(file_tree);
+ 		montage_window_move_cursor(0, 0, 0);
+ 		D_UNLOCK(file_tree);
++		g_idle_add(mb_state_idle, NULL);
+ 	}
+ 	#endif
+ 
+@@ -6878,13 +7076,21 @@ void handle_input_event(guint key_binding_value) {/*{{{*/
+ #endif
+ }/*}}}*/
+ gboolean window_key_press_callback(GtkWidget *widget, GdkEventKey *event, gpointer user_data) {/*{{{*/
++	if(mb_gallery_entry && gtk_window_get_focus(main_window) == mb_gallery_entry) {
++		if(event->keyval == GDK_KEY_Escape || event->keyval == GDK_KEY_Return) {
++			gtk_widget_grab_focus(mb_gallery_canvas);
++			return TRUE;
++		}
++		return FALSE;
++	}
+ 	GdkKeymap *keymap = gdk_keymap_get_for_display(gtk_widget_get_display(GTK_WIDGET(main_window)));
+ 	guint keyval;
+ 	GdkModifierType consumed;
+ 
+ 	gdk_keymap_translate_keyboard_state(keymap, event->hardware_keycode, event->state, event->group, &keyval, NULL, NULL, &consumed);
+ 	handle_input_event(KEY_BINDING_VALUE(0, event->state & ~consumed, keyval));
+-	return FALSE;
++	/* Grid arrows navigate media, not GTK's focus chain into the search box. */
++	return mb_gallery_canvas != NULL;
+ }/*}}}*/
+ void window_center_mouse() {/*{{{*/
+ 	GdkDisplay *display = gtk_widget_get_display(GTK_WIDGET(main_window));
+@@ -7012,6 +7218,7 @@ gboolean window_motion_notify_callback(GtkWidget *widget, GdkEventMotion *event,
+ 	return FALSE;
+ }/*}}}*/
+ gboolean window_button_press_callback(GtkWidget *widget, GdkEventButton *event, gpointer user_data) {/*{{{*/
++	if(mb_gallery_canvas) gtk_widget_grab_focus(mb_gallery_canvas);
+ 	if(event->time - last_button_press_time < 250 && (application_mode != MONTAGE || event->type != GDK_2BUTTON_PRESS)) {
+ 		// GTK double-reported this. Ignore.
+ 		return FALSE;
+@@ -7031,6 +7238,12 @@ gboolean window_button_press_callback(GtkWidget *widget, GdkEventButton *event,
+ 		if(event->y < 0) event->y = 0;
+ 
+ 		montage_window_set_cursor((int)(event->x / (option_thumbnails.width + 10)), (int)(event->y / (option_thumbnails.height + 10)));
++		if(g_getenv("MEDIA_BROWSER_EVENTS")) {
++			mb_emit("state");
++			if(event->type == GDK_2BUTTON_PRESS) mb_emit("open");
++			gtk_widget_queue_draw(GTK_WIDGET(main_window));
++			return FALSE;
++		}
+ 		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+ 		if(event->type == GDK_2BUTTON_PRESS) {
+ 			pqiv_action_parameter_t empty_param = { .pint = 0 };
+@@ -7300,8 +7513,10 @@ void window_realize_callback(GtkWidget *widget, gpointer user_data) {/*{{{*/
+ 	csd_bottom = window_allocation.height - box_allocation.height - csd_top;
+ 	csd_height = csd_top + csd_bottom;
+ 	csd_width = csd_left + csd_right;
+-	gtk_widget_destroy(main_window_box);
+-	main_window_box = NULL;
++	if(!mb_gallery_canvas) {
++		gtk_widget_destroy(main_window_box);
++		main_window_box = NULL;
++	}
+ 
+ 	// Transition to fullscreen if that was requested
+ 	if(option_start_fullscreen) {
+@@ -7338,28 +7553,26 @@ void create_window() { /*{{{*/
+ 		return;
+ 	}
+ 
+-	#if GTK_MAJOR_VERSION >= 3
+-		GtkSettings *settings = gtk_settings_get_default();
+-		if(settings != NULL) {
+-			g_object_set(G_OBJECT(settings), "gtk-application-prefer-dark-theme", TRUE, NULL);
+-		}
+-	#endif
+-
+ 	main_window = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
++	gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(main_window)), GTK_STYLE_CLASS_BACKGROUND);
++	g_signal_connect(main_window, "style-updated", G_CALLBACK(mb_theme_changed), NULL);
++	mb_theme_changed(GTK_WIDGET(main_window), NULL);
+ 
+ 	g_signal_connect(main_window, "destroy", G_CALLBACK(window_close_callback), NULL);
+ 	#if GTK_MAJOR_VERSION < 3
+ 		g_signal_connect(main_window, "expose-event", G_CALLBACK(window_expose_callback), NULL);
+ 	#else
+-		g_signal_connect(main_window, "draw", G_CALLBACK(window_draw_callback), NULL);
++		if(!g_getenv("MEDIA_BROWSER_EVENTS")) g_signal_connect(main_window, "draw", G_CALLBACK(window_draw_callback), NULL);
+ 	#endif
+ 	g_signal_connect(main_window, "configure-event", G_CALLBACK(window_configure_callback), NULL);
+ 	g_signal_connect(main_window, "key-press-event", G_CALLBACK(window_key_press_callback), NULL);
+-	g_signal_connect(main_window, "scroll-event", G_CALLBACK(window_scroll_callback), NULL);
++	if(!g_getenv("MEDIA_BROWSER_EVENTS")) g_signal_connect(main_window, "scroll-event", G_CALLBACK(window_scroll_callback), NULL);
+ 	g_signal_connect(main_window, "screen-changed", G_CALLBACK(window_screen_changed_callback), NULL);
+-	g_signal_connect(main_window, "motion-notify-event", G_CALLBACK(window_motion_notify_callback), NULL);
+-	g_signal_connect(main_window, "button-press-event", G_CALLBACK(window_button_press_callback), NULL);
+-	g_signal_connect(main_window, "button-release-event", G_CALLBACK(window_button_release_callback), NULL);
++	if(!g_getenv("MEDIA_BROWSER_EVENTS")) {
++		g_signal_connect(main_window, "motion-notify-event", G_CALLBACK(window_motion_notify_callback), NULL);
++		g_signal_connect(main_window, "button-press-event", G_CALLBACK(window_button_press_callback), NULL);
++		g_signal_connect(main_window, "button-release-event", G_CALLBACK(window_button_release_callback), NULL);
++	}
+ 	g_signal_connect(main_window, "window-state-event", G_CALLBACK(window_state_callback), NULL);
+ 	g_signal_connect(main_window, "realize", G_CALLBACK(window_realize_callback), NULL);
+ 
+@@ -7370,6 +7583,7 @@ void create_window() { /*{{{*/
+ 	main_window_box = GTK_WIDGET(gtk_hbox_new(TRUE, 0));
+ 	#endif
+ 	gtk_container_add(GTK_CONTAINER(main_window), main_window_box);
++	if(g_getenv("MEDIA_BROWSER_EVENTS")) mb_gallery_setup();
+ 
+ 	gtk_widget_set_events(GTK_WIDGET(main_window),
+ 		GDK_EXPOSURE_MASK | GDK_SCROLL_MASK | GDK_BUTTON_MOTION_MASK |
+@@ -8259,6 +8473,12 @@ int main(int argc, char *argv[]) {
+ 		option_scale = FIXED_SCALE;
+ 		current_scale_level = option_initial_scale;
+ 	}
++	if(g_getenv("MEDIA_BROWSER_PHOTO_VIEWER")) {
++		/* Establish fit policy before loading even a very fast still image.
++		 * Startup actions can run before a file is loaded and be discarded. */
++		option_scale = SCALE_TO_FIT_WINDOW;
++		scale_override = FALSE;
++	}
+ 	cairo_matrix_init_identity(&current_transformation);
+ 
+ 	if(option_fading_duration > option_slideshow_interval) {
+@@ -8317,6 +8537,7 @@ int main(int argc, char *argv[]) {
+ 	// Note: This still won't free all the data, because we hold weak
+ 	// references. But that doesn't matter, the unloading is the important
+ 	// thing as it removes any temporary files.
++	mb_view_clear();
+ 	bostree_destroy(file_tree);
+ 	D_UNLOCK(file_tree);
+ 
+diff --git a/pqiv.h b/pqiv.h
+index 19cfb92..e4b4a95 100644
+--- a/pqiv.h
++++ b/pqiv.h
+@@ -94,6 +94,10 @@ struct _file {
+ #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
+ 	// Cached thumbnail
+ 	cairo_surface_t *thumbnail;
++	gboolean mb_published;
++	guint64 mb_generation;
++	guint64 mb_loaded_generation;
++	guint64 mb_thumbnail_generation;
+ #endif
+ 
+ 	// Lock to prevent multiple threads from accessing the backend at the same
+@@ -292,6 +296,18 @@ typedef enum {
+ 	ACTION_TOGGLE_NEGATE_MODE,
+ 	ACTION_TOGGLE_MARK,
+ 	ACTION_CLEAR_MARKS,
++	ACTION_RELOAD_THUMBNAIL,
++	ACTION_MB_EVENT,
++	ACTION_MB_MARK,
++	ACTION_MB_CONFIRM,
++	ACTION_MB_ERROR,
++	ACTION_MB_ROW,
++	ACTION_MB_HELP,
++	ACTION_MB_COPY_REQUEST,
++	ACTION_MB_COPY,
++	ACTION_MB_VIEW,
++	ACTION_MB_SEARCH_FOCUS,
++	ACTION_MB_SEARCH_STATUS,
+ } pqiv_action_t;
+ 
+ typedef union {

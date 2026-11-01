@@ -1,0 +1,20 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+
+Media Browser
+Copyright (C) 2026 Media Browser contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+
+The complete GPL v3 text is also shipped in the package as COPYING.pqiv and is
+available on Arch Linux at /usr/share/licenses/common/GPL3/license.txt.
+pqiv and the renderer integration are GPL-3.0-or-later. Upstream pqiv source and
+copyright notices are retained in the corresponding source distribution.

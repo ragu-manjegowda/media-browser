@@ -1,0 +1,8 @@
+/target/
+/.build/
+/artifacts/
+/pkg/
+/src-build/
+/*.pkg.tar.*
+__pycache__/
+*.pyc

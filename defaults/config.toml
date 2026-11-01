@@ -1,0 +1,2 @@
+# Supported steps: 64, 96, 128, 192, 256, 384.
+thumbnail_size = 256

@@ -1,0 +1,25 @@
+[package]
+name = "media-browser"
+version = "0.3.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Viewport-bounded native photo and video browser using pqiv and mpv"
+repository = "https://github.com/ragu-manjegowda/media-browser"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+gdk-pixbuf = "0.21"
+gio = "0.21"
+glib = "0.21"
+md5 = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = "0.3"
+tempfile = "3"
+toml = "0.9"
+
+[profile.release]
+lto = "thin"
+strip = true

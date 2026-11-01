@@ -1,0 +1,2 @@
+# Unified diff context lines preserve upstream whitespace and patch prefixes.
+renderer/patches/*.patch -whitespace

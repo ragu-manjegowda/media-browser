@@ -1,0 +1,58 @@
+[keybindings]
+h { shift_x(40); }
+j { shift_y(-40); }
+k { shift_y(40); }
+l { shift_x(-40); }
+zi { set_scale_level_relative(1.2); }
+zo { set_scale_level_relative(0.8333333333); }
+n { goto_file_relative(1); }
+p { goto_file_relative(-1); }
+<Control>d { goto_file_relative(1); }
+<Control>u { goto_file_relative(-1); }
+f { toggle_fullscreen(); }
+<Escape> { quit(); }
+<Tab> { quit(); }
+<Return> { nop(); }
+q { quit(); }
+<question> { mb_help(); }
+y { mb_copy_request(0); }
+Y { mb_copy_request(1); }
+
+@MONTAGE {
+    h { montage_mode_shift_x(-1); }
+    j { montage_mode_shift_y(1); }
+    k { montage_mode_shift_y(-1); }
+    l { montage_mode_shift_x(1); }
+    <Left> { montage_mode_shift_x(-1); }
+    <Right> { montage_mode_shift_x(1); }
+    <Down> { montage_mode_shift_y(1); }
+    <Up> { montage_mode_shift_y(-1); }
+    <Control>d { montage_mode_shift_y_pg(1); }
+    <Control>u { montage_mode_shift_y_pg(-1); }
+    <Page_Down> { montage_mode_shift_y_pg(1); }
+    <Page_Up> { montage_mode_shift_y_pg(-1); }
+    <Home> { goto_file_byindex(0); }
+    <End> { goto_file_byindex(-1); }
+    gg { goto_file_byindex(0); }
+    G { goto_file_byindex(-1); }
+    0 { mb_row(0); }
+    <dollar> { mb_row(1); }
+    f { montage_mode_follow(asdfghjkl); }
+    zi { mb_event(sizeup); }
+    zo { mb_event(sizedown); }
+    v { mb_event(visual); }
+    <Escape> { mb_event(stop); }
+    u { mb_event(clear); }
+    <Control>o { mb_event(clear); }
+    o { nop(); }
+    d { mb_event(trash); }
+    <Return> { mb_event(open); }
+    <Mouse-1> { nop(); }
+    m { nop(); }
+    <Tab> { nop(); }
+    q { quit(); }
+    <question> { mb_help(); }
+    y { mb_copy_request(0); }
+    Y { mb_copy_request(1); }
+    <slash> { mb_search_focus(); }
+}
