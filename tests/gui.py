@@ -614,12 +614,23 @@ class Suite:
         )
         self.key(window, "Tab")
         wait(lambda: state()["focus"] == "list", "Tab focuses shortcut list")
-        initial = state().getfloat("scroll")
-        self.key(window, "j", "j", "j")
-        wait(lambda: state().getfloat("scroll") > initial, "j scrolls help down")
-        down = state().getfloat("scroll")
-        self.key(window, "k", "k")
-        wait(lambda: state().getfloat("scroll") < down, "k scrolls help up")
+
+        def scroll(key):
+            before = state().getfloat("scroll")
+            self.key(window, key)
+            wait(
+                lambda: (
+                    state().getfloat("scroll") > before
+                    if key == "j"
+                    else state().getfloat("scroll") < before
+                ),
+                f"{key} scrolls help {'down' if key == 'j' else 'up'}",
+            )
+
+        # xdotool returning only confirms input delivery. A partial batch of j
+        # updates must not become the baseline for the following k assertions.
+        for key in ("j", "j", "j", "k", "k"):
+            scroll(key)
         assert state()["query"] == ""
         self.key(window, "slash", "q")
         wait(
